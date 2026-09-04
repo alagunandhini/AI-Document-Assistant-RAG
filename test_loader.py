@@ -15,7 +15,11 @@ chunks = create_chunks(cleaned_text)
 
 embeddings = create_embeddings(chunks)
 
-store_chunks(chunks, embeddings)
+store_chunks(
+    chunks,
+    embeddings,
+    source=pdf_path
+)
 
 print("Document successfully stored in ChromaDB!")
 print("Number of chunks:", len(chunks))
