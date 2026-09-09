@@ -11,6 +11,8 @@ from src.chunker import create_chunks
 from src.embeddings import create_embeddings
 from src.vector_store import store_chunks
 
+from src.database import SessionLocal, Document, DocumentChunk
+
 
 
 app = FastAPI(
@@ -65,18 +67,74 @@ async def upload_document(file: UploadFile = File(...)):
     # Create chunks
     chunks = create_chunks(cleaned_text)
 
-    # Create embeddings
-    embeddings = create_embeddings(chunks)
+    # Create SQL database session
+    db = SessionLocal()
 
-    # Store in ChromaDB
-    store_chunks(chunks, embeddings)
+    document = None
 
-    return {
-        "message": "Document uploaded and processed successfully",
-        "filename": file.filename,
-        "chunks_created": len(chunks)
-    }
+    try:
+        # Save document metadata in SQL
+        document = Document(
+            filename=file.filename,
+            file_size=os.path.getsize(file_path),
+            total_chunks=len(chunks),
+            status="processing"
+        )
 
+        db.add(document)
+        db.commit()
+        db.refresh(document)
+
+        # Save chunks in SQL
+        for index, chunk in enumerate(chunks):
+
+            chunk_record = DocumentChunk(
+                document_id=document.id,
+                chunk_index=index,
+                chunk_text=chunk
+            )
+
+            db.add(chunk_record)
+
+        db.commit()
+
+        # Create embeddings
+        embeddings = create_embeddings(chunks)
+
+        # Store embeddings in ChromaDB
+        store_chunks(
+            chunks,
+            embeddings,
+            source=file.filename
+        )
+
+        # Mark document as processed
+        document.status = "processed"
+
+        db.commit()
+
+        return {
+            "message": "Document uploaded and processed successfully",
+            "filename": file.filename,
+            "chunks_created": len(chunks),
+            "document_id": document.id,
+            "status": document.status
+        }
+
+    except Exception as e:
+
+        if document:
+            document.status = "failed"
+            db.commit()
+
+        return {
+            "error": str(e),
+            "filename": file.filename,
+            "status": "failed"
+        }
+
+    finally:
+        db.close()
 
 @app.post("/ask")
 def ask_question(request: QuestionRequest):
@@ -87,3 +145,25 @@ def ask_question(request: QuestionRequest):
         "question": request.question,
         "answer": answer
     }
+
+@app.get("/documents")
+def get_documents():
+    db = SessionLocal()
+
+    try:
+        documents = db.query(Document).all()
+
+        return [
+            {
+                "id": document.id,
+                "filename": document.filename,
+                "file_size": document.file_size,
+                "total_chunks": document.total_chunks,
+                "status": document.status,
+                "uploaded_at": document.uploaded_at
+            }
+            for document in documents
+        ]
+
+    finally:
+        db.close()
